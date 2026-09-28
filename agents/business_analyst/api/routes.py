@@ -60,7 +60,7 @@ from agents.business_analyst.deliverables import (
 )
 from agents.business_analyst.capabilities.projection import RenderedArtifact, render_deliverable
 from agents.business_analyst.capabilities.projection.requirements_register import xlsx_preview
-from agents.business_analyst.deliverables_pdf import PDF_DELIVERABLES, markdown_to_pdf, pdf_to_text
+from agents.business_analyst.deliverables_pdf import PDF_DELIVERABLES, bounded_markdown_to_pdf, pdf_to_text
 from agents.business_analyst.capabilities.projection.requirement_package import (
     render_requirement_package,
 )
@@ -1505,7 +1505,7 @@ async def generate_deliverable_endpoint(
         content_str = rendered
         output_format = "pdf" if key in PDF_DELIVERABLES else "markdown"
         is_pdf = output_format == "pdf"
-        artifact = await asyncio.to_thread(markdown_to_pdf, content_str) if is_pdf else content_str.encode("utf-8")
+        artifact = await asyncio.to_thread(bounded_markdown_to_pdf, content_str, key) if is_pdf else content_str.encode("utf-8")
         preview_content = pdf_to_text(artifact) if is_pdf else content_str
         extension = "pdf" if is_pdf else "md"
         media_type = "application/pdf" if is_pdf else "text/markdown"

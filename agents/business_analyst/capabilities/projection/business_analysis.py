@@ -98,11 +98,17 @@ async def get_business_analysis(
     """Returns a cached analysis for the current record, refreshing it when evidence changes."""
     payload = _analysis_input(project_name, summary, context, requirements)
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-    fingerprint = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     project = await session.get(BaProject, ctx.project_id)
     if project is None or project.org_id != ctx.org_id:
         return BusinessAnalysis()
+
+    try:
+        system_prompt = await fetch_prompt("9", "ba_brd_business_analysis_v1")
+    except Exception as exc:  # noqa: BLE001 - keep factual documents available during prompt outages
+        logger.warning("BA_BUSINESS_ANALYSIS_DEGRADED project_id=%s reason=%s", ctx.project_id, exc)
+        return BusinessAnalysis()
+    fingerprint = hashlib.sha256((system_prompt + "\n" + encoded).encode("utf-8")).hexdigest()
 
     settings = project.settings or {}
     cached = settings.get("business_document_analysis") if isinstance(settings, dict) else None
@@ -114,7 +120,7 @@ async def get_business_analysis(
 
     try:
         analysis = await get_structured_output(
-            system_prompt=await fetch_prompt("9", "ba_brd_business_analysis_v1"),
+            system_prompt=system_prompt,
             user_prompt=encoded,
             response_model=BusinessAnalysis,
             agent_id="9",
@@ -133,7 +139,7 @@ async def get_business_analysis(
         analysis = analysis.model_copy(update={"business_requirements": normalized[:40]})
     except Exception as exc:  # noqa: BLE001 - keep factual summary/register available during LLM outages
         logger.warning("BA_BUSINESS_ANALYSIS_DEGRADED project_id=%s reason=%s", ctx.project_id, exc)
-        analysis = BusinessAnalysis()
+        return BusinessAnalysis()
 
     await session.refresh(project, attribute_names=["settings"])
     updated_settings = dict(project.settings or {})

@@ -18,8 +18,13 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, PageBreak, 
 from reportlab.platypus.tableofcontents import TableOfContents
 
 PDF_DELIVERABLES = frozenset({"brd", "frd", "technical_docs"})
+PDF_PAGE_LIMITS = {"brd": 40, "frd": 120, "technical_docs": 60}
 BLUE = colors.HexColor("#5277A5")
 INK = colors.HexColor("#243447")
+
+
+class PDFPageLimitExceeded(ValueError):
+    """The draft exceeded its allowed PDF length before it could be stored."""
 
 
 def _font_family():
@@ -50,6 +55,11 @@ class RequirementsPDF(SimpleDocTemplate):
     def beforeDocument(self):
         self.bookmark_number = 0
 
+    def afterPage(self):
+        limit = getattr(self, "page_limit", None)
+        if limit is not None and self.page > limit:
+            raise PDFPageLimitExceeded(f"PDF exceeds the {limit}-page limit")
+
     def afterFlowable(self, flowable):
         if isinstance(flowable, Paragraph) and hasattr(flowable, "outline_level"):
             text = flowable.getPlainText()
@@ -60,7 +70,7 @@ class RequirementsPDF(SimpleDocTemplate):
                 self.notify("TOCEntry", (min(flowable.outline_level - 2, 2), text, self.page, key))
 
 
-def markdown_to_pdf(markdown: str) -> bytes:
+def markdown_to_pdf(markdown: str, *, max_pages: int | None = None) -> bytes:
     """Render a cover, automatic contents, numbered sections, and wrapped blue tables."""
     regular, bold = _font_family()
     title_match = re.search(r"^# (.+)$", markdown, re.M)
@@ -70,6 +80,7 @@ def markdown_to_pdf(markdown: str) -> bytes:
     buffer = BytesIO()
     doc = RequirementsPDF(buffer, pagesize=A4, leftMargin=24*mm, rightMargin=24*mm,
         topMargin=25*mm, bottomMargin=23*mm, title=title, author="Athena")
+    doc.page_limit = max_pages
     body = ParagraphStyle("body", fontName=regular, fontSize=9, leading=13, textColor=INK, spaceAfter=6)
     cell = ParagraphStyle("cell", parent=body, fontSize=8, leading=11, spaceAfter=0)
     header_cell = ParagraphStyle("headerCell", parent=cell, fontName=bold, textColor=colors.white)
@@ -146,7 +157,70 @@ def markdown_to_pdf(markdown: str) -> bytes:
         canvas.drawRightString(A4[0]-doc.rightMargin,12*mm,f"Page {document.page}")
         canvas.restoreState()
     doc.multiBuild(story,onFirstPage=page,onLaterPages=page)
-    return buffer.getvalue()
+    artifact = buffer.getvalue()
+    if max_pages is not None and len(PdfReader(BytesIO(artifact)).pages) > max_pages:
+        raise PDFPageLimitExceeded(f"PDF exceeds the {max_pages}-page limit")
+    return artifact
+
+
+def _condensed_markdown(markdown: str, *, lines_per_section: int, chars_per_line: int) -> str:
+    """Keep every main section while pointing readers to the complete register."""
+    title_match = re.search(r"^# (.+)$", markdown, re.M)
+    project_match = re.search(r"^\*\*Project:\*\* (.+)$", markdown, re.M)
+    title = title_match.group(1) if title_match else "Requirements Document"
+    project = project_match.group(1) if project_match else "Project"
+    result = [
+        f"# {title}", f"**Project:** {project}", "",
+        "## Document length", "",
+        "This edition is condensed to meet the document page limit. The Requirements Register contains the complete detailed requirements, source evidence, acceptance criteria, and traceability.",
+        "",
+    ]
+    for part in re.split(r"(?=^## )", markdown, flags=re.M)[1:]:
+        heading, *body = part.splitlines()
+        if heading.strip() == "## Table of Contents":
+            continue
+        result.extend([heading, ""])
+        selected = []
+        omitted = 0
+        for raw in body:
+            line = raw.strip()
+            if not line or re.fullmatch(r"[|:\-\s]+", line):
+                continue
+            if line.startswith("|"):
+                cells = [cell.strip() for cell in line.strip("|").split("|") if cell.strip()]
+                line = "- " + " · ".join(cells)
+            elif line.startswith("###"):
+                line = "- " + line.lstrip("# ")
+            if len(line) > chars_per_line:
+                line = line[:chars_per_line].rsplit(" ", 1)[0].rstrip(" ,;:-") + "…"
+            if len(selected) < lines_per_section:
+                selected.append(line)
+            else:
+                omitted += 1
+        result.extend(selected or ["The project record has no confirmed content for this section."])
+        if omitted:
+            result.append("Additional recorded details are in the Requirements Register and project sources.")
+        result.append("")
+    return "\n".join(result)
+
+
+def bounded_markdown_to_pdf(markdown: str, deliverable_key: str) -> bytes:
+    """Enforce document length and transparently condense unusually large drafts."""
+    limit = PDF_PAGE_LIMITS.get(deliverable_key)
+    if limit is None:
+        return markdown_to_pdf(markdown)
+    candidates = (
+        markdown,
+        _condensed_markdown(markdown, lines_per_section=6, chars_per_line=240),
+        _condensed_markdown(markdown, lines_per_section=2, chars_per_line=140),
+        _condensed_markdown(markdown, lines_per_section=1, chars_per_line=100),
+    )
+    for candidate in candidates:
+        try:
+            return markdown_to_pdf(candidate, max_pages=limit)
+        except PDFPageLimitExceeded:
+            continue
+    raise PDFPageLimitExceeded(f"Could not produce a document within {limit} pages")
 
 
 def pdf_to_text(pdf_bytes: bytes) -> str:
