@@ -1,0 +1,37 @@
+# Business Analyst OS runtime
+fastapi>=0.115.0
+python-multipart>=0.0.9
+uvicorn[standard]>=0.32.0
+pydantic>=2.9.2
+pydantic-settings>=2.5.2
+
+# Database
+sqlalchemy>=2.0.30
+asyncpg>=0.29.0
+aiosqlite>=0.20.0
+greenlet>=3.0.0
+psycopg2-binary>=2.9.0
+pgvector>=0.2.5
+alembic>=1.20.0
+
+# BA document ingestion, semantic support, and LLM access
+python-docx>=1.1.0
+pypdf>=4.0.0
+reportlab>=4.2.0
+rapidfuzz>=3.10.0
+langchain-core
+langchain-openai
+openai>=3.19.0
+langgraph>=1.2.12
+# Optional tracing: active only when LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY are set
+langfuse>=4.15.6
+boto3>=1.35.0
+python-dotenv>=1.0.1
+httpx>=0.27.0
+PyJWT>=2.13.0
+pwdlib[argon2]>=0.3.0
+email-validator>=2.0.0
+
+# Tests
+pytest>=8.3.3
+pytest-asyncio>=0.24.0

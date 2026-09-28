@@ -1,0 +1,18 @@
+[project]
+name = "athena"
+version = "1.0.0"
+description = "Athena business analyst agent"
+requires-python = ">=3.11"
+dependencies = [
+    "alembic>=1.20.0",
+    "boto3>=1.35.0",
+    "fastapi>=0.115.0",
+    "pydantic-settings>=2.5.2",
+    "sqlalchemy>=2.0.30",
+]
+
+[tool.setuptools.packages.find]
+include = ["athena*"]
+
+[tool.pyright]
+extraPaths = ["."]

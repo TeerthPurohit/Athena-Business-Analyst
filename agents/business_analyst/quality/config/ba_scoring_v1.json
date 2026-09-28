@@ -1,0 +1,31 @@
+{
+  "version": "1.0.0",
+  "sha_pinned": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "constants": {
+    "k_corroboration": 0.6931471805599453,
+    "k_corroboration_label": "ln 2",
+    "contradiction_penalty": 0.30,
+    "llm_source_cap": 1.0,
+    "llm_inference_confidence_ceiling": 0.40,
+    "llm_inference_only_max_score": 0.10,
+    "contradiction_knn_k": 12,
+    "default_half_life_days": 180,
+    "per_tier_ceilings": {
+      "tier1": 0.98,
+      "tier2": 0.90,
+      "tier3": 0.80,
+      "tier4": 0.70,
+      "tier5": 0.60,
+      "tier10": 0.40,
+      "llm_inference": 0.40
+    }
+  },
+  "confidence_metadata": {
+    "llm_source_cap": "High",
+    "contradiction_penalty": "Medium-High",
+    "k_corroboration": "Medium",
+    "per_tier_ceilings": "Low-Medium",
+    "contradiction_knn_k": "Low",
+    "default_half_life_days": "Low"
+  }
+}
