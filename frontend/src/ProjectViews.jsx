@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ArrowRight, Check, CircleHelp, Download, Eye, FileCheck2, FilePlus2, FolderOpen, LoaderCircle, Paperclip, Search } from 'lucide-react'
+import { apiUrl } from './api'
 
 const humanize = (key) => key.replaceAll('_', ' ')
 const deliverableFormat = (format) => format?.toLowerCase() === 'pdf' ? 'PDF' : 'Markdown'
@@ -128,7 +129,7 @@ function PdfPreview({ document, token, projectId }) {
     setPreview({ url: '', error: '' })
     async function load() {
       try {
-        const response = await fetch(`/api/ba/projects/${projectId}/deliverables/${document.id}/download`, { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal })
+        const response = await fetch(apiUrl(`/api/ba/projects/${projectId}/deliverables/${document.id}/download`), { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal })
         if (!response.ok) throw new Error('The PDF could not be opened. Try downloading it.')
         const blob = await response.blob()
         if (controller.signal.aborted) return

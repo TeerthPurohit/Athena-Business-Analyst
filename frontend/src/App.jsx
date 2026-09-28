@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { DocumentsView, FindingsView } from './ProjectViews'
 import { ProjectConversation } from './ProjectConversation'
+import { apiUrl } from './api'
 import {
   ArrowRight, ArrowUpRight, BookOpen, ChevronDown, CircleHelp, FileCheck2,
   FolderOpen, KeyRound, LayoutDashboard, LoaderCircle, Menu, Plus, RotateCcw, ShieldCheck, Trash2, X,
@@ -21,14 +22,14 @@ function getErrorMessage(data, fallback) {
 async function request(path, token, options = {}) {
   const headers = { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...options.headers }
   if (options.body && !(options.body instanceof FormData)) headers['Content-Type'] = 'application/json'
-  const response = await fetch(path, { ...options, headers })
+  const response = await fetch(apiUrl(path), { ...options, headers })
   const data = await response.json().catch(() => null)
   if (!response.ok) throw new Error(getErrorMessage(data, `Request failed (${response.status}).`))
   return data
 }
 
 async function requestAudio(path, token, payload) {
-  const response = await fetch(path, {
+  const response = await fetch(apiUrl(path), {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -42,7 +43,7 @@ async function requestAudio(path, token, payload) {
 
 async function streamProjectAction(path, token, payload, onEvent) {
   const isForm = payload instanceof FormData
-  const response = await fetch(path, {
+  const response = await fetch(apiUrl(path), {
     method: 'POST', headers: { Authorization: `Bearer ${token}`, ...(isForm ? {} : { 'Content-Type': 'application/json' }) },
     body: isForm ? payload : JSON.stringify(payload),
   })
@@ -393,7 +394,7 @@ export default function App() {
     setBusy('delete-project')
     setDeleteError('')
     try {
-      const response = await fetch(`/api/ba/projects/${encodeURIComponent(projectId)}`, {
+      const response = await fetch(apiUrl(`/api/ba/projects/${encodeURIComponent(projectId)}`), {
         method: 'DELETE',
         headers: {
           Authorization: `Bearer ${tokenAtStart}`,
@@ -753,7 +754,7 @@ export default function App() {
     setBusy(`download-${item.id}`)
     setError('')
     try {
-      const response = await fetch(`/api/ba/projects/${projectId}/deliverables/${item.id}/download`, {
+      const response = await fetch(apiUrl(`/api/ba/projects/${projectId}/deliverables/${item.id}/download`), {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!response.ok) {
@@ -785,7 +786,7 @@ export default function App() {
     setBusy(`source-${source.id}`)
     setError('')
     try {
-      const response = await fetch(`/api/ba/projects/${projectId}/sources/${source.id}/download`, {
+      const response = await fetch(apiUrl(`/api/ba/projects/${projectId}/sources/${source.id}/download`), {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!response.ok) throw new Error(`Source download failed (${response.status}).`)

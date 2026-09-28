@@ -1,6 +1,7 @@
 """Athena business analyst agent application entry point."""
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -50,9 +51,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+configured_cors_origins = os.getenv("CORS_ORIGINS", "")
+cors_origins = [
+    origin.strip().rstrip("/")
+    for origin in configured_cors_origins.split(",")
+    if origin.strip()
+]
+if not cors_origins:
+    cors_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
