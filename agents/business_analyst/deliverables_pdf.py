@@ -17,7 +17,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, PageBreak, CondPageBreak, LongTable, TableStyle
 from reportlab.platypus.tableofcontents import TableOfContents
 
-PDF_DELIVERABLES = frozenset({"brd", "frd"})
+PDF_DELIVERABLES = frozenset({"brd", "frd", "technical_docs"})
 BLUE = colors.HexColor("#5277A5")
 INK = colors.HexColor("#243447")
 

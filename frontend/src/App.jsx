@@ -767,7 +767,12 @@ export default function App() {
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      const extension = response.headers.get('content-type')?.includes('application/pdf') ? 'pdf' : 'md'
+      const contentType = response.headers.get('content-type')?.toLowerCase() || ''
+      const extension = contentType.includes('application/pdf')
+        ? 'pdf'
+        : contentType.includes('spreadsheetml')
+          ? 'xlsx'
+          : 'md'
       link.download = `${item.deliverable_key}.${extension}`
       document.body.appendChild(link)
       link.click()

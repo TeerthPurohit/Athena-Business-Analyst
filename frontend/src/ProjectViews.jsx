@@ -3,7 +3,10 @@ import { ArrowRight, Check, CircleHelp, Download, Eye, FileCheck2, FilePlus2, Fo
 import { apiUrl } from './api'
 
 const humanize = (key) => key.replaceAll('_', ' ')
-const deliverableFormat = (format) => format?.toLowerCase() === 'pdf' ? 'PDF' : 'Markdown'
+const deliverableFormat = (format) => {
+  const value = format?.toLowerCase()
+  return value === 'pdf' ? 'PDF' : value === 'xlsx' ? 'Excel workbook' : 'Markdown'
+}
 const isFilled = (value) => value != null && value !== '' && (!Array.isArray(value) || value.length > 0)
 const formatValue = (value) => Array.isArray(value) ? value.map(formatValue).join('; ')
   : value && typeof value === 'object' ? Object.entries(value).filter(([, item]) => isFilled(item)).map(([key, item]) => `${humanize(key)}: ${formatValue(item)}`).join(', ')
@@ -164,7 +167,7 @@ export function DocumentsView({ token, projectId, catalog, documentKey, onKeyCha
       <button className="primary-action" type="button" onClick={() => onGenerate()} disabled={!catalog.length || !findingsCount || !!busy}>{busy === 'generate' ? <LoaderCircle className="spin" size={17} /> : <FileCheck2 size={17} />} Create draft</button>
     </div>
     <div className="flow-panel"><h2>Saved drafts</h2>{documents.length ? <div className="flow-document-list">{[...documents].reverse().map((item) => <article className="flow-document" key={item.id}><div><strong>{item.name}</strong><small>{item.is_stale ? 'Project changed since this draft' : item.status === 'approved' ? 'Approved' : 'Draft'} · {deliverableFormat(item.output_format)}</small>{item.is_stale && <p className="flow-stale">Create a fresh draft above to include the latest project findings.</p>}</div><div className="flow-document-actions"><button type="button" onClick={() => onView(item)} disabled={!!busy}><Eye size={16} /> Read</button><button type="button" onClick={() => onDownload(item)} disabled={!!busy}><Download size={16} /> {item.is_stale ? 'Download old draft' : 'Download'}</button></div></article>)}</div> : <p className="flow-empty">No drafts yet. Choose a document type above to create the first one.</p>}</div>
-    {openDocument && <div className="flow-panel flow-preview"><div className="flow-panel-head"><div><h2>{openDocument.name}</h2><p>{openDocument.output_format?.toLowerCase() === 'pdf' ? 'PDF preview' : 'Markdown preview'}</p></div><button type="button" onClick={() => onDownload(openDocument)} disabled={!!busy}><Download size={16} /> Download</button></div>{openDocument.output_format?.toLowerCase() === 'pdf' ? <PdfPreview document={openDocument} token={token} projectId={projectId} /> : <pre>{openDocument.content}</pre>}</div>}
+    {openDocument && <div className="flow-panel flow-preview"><div className="flow-panel-head"><div><h2>{openDocument.name}</h2><p>{deliverableFormat(openDocument.output_format)} preview</p></div><button type="button" onClick={() => onDownload(openDocument)} disabled={!!busy}><Download size={16} /> Download</button></div>{openDocument.output_format?.toLowerCase() === 'pdf' ? <PdfPreview document={openDocument} token={token} projectId={projectId} /> : <pre>{openDocument.content}</pre>}</div>}
     {!findingsCount && <button className="flow-next" type="button" onClick={() => onNavigate('workspace')}>Start with project material <ArrowRight size={17} /></button>}
   </section>
 }

@@ -7,9 +7,9 @@ from agents.business_analyst.models import BaProject, BaSource
 MISSING = "Not yet specified in the project record."
 
 
-def table(headers, rows):
+def table(headers, rows, *, missing=MISSING):
     def cell(value):
-        return (plain(value) or MISSING).replace("|", "\\|").replace("\n", "<br>")
+        return (plain(value) or missing).replace("|", "\\|").replace("\n", "<br>")
     return "| " + " | ".join(headers) + " |\n| " + " | ".join("---" for _ in headers) + " |\n" + "".join(
         "| " + " | ".join(cell(value) for value in row) + " |\n" for row in rows
     )
@@ -75,40 +75,65 @@ def summary_value(summary, *keys):
     return "\n\n".join(plain(summary.get(key)) for key in keys if plain(summary.get(key))) or MISSING
 
 
-async def front_matter(title, name, context, control, facts, ctx, session, frd=False):
+async def front_matter(title, name, context, control, facts, ctx, session, frd=False, max_sources=30):
     md = f"# {title}\n\n**Project:** {name}\n\n**Status:** Draft - subject to review and approval.\n\n"
-    md += "## Document Information\n" + table(["Item", "Description"], [
-        (label, control.get(key)) for key, label in (
+    information = [
+        (field_label, control.get(key)) for key, field_label in (
             ("version", "Current Version"), ("owner", "Owner"), ("updated_at", "Date Last Updated"),
             ("updated_by", "Last Updated By"), ("author", "Author"), ("created_at", "Date Created"),
             ("approved_by", "Approved By"), ("approval_date", "Approval Date"),
         )
-    ]) + "\n"
-    history = control.get("revision_history") or []
-    md += "## " + ("Revision History" if frd else "Document Control") + "\n" + table(
-        ["Version", "Date", "Author", "Description"],
-        [(r.get("version"), r.get("date"), r.get("author"), r.get("description")) for r in history if isinstance(r, dict)] or [(None, None, None, "Draft compiled from the current project record.")],
-    ) + "\n"
+        if control.get(key) not in (None, "", [], {})
+    ]
+    if information:
+        md += "## Document Information\n" + table(["Item", "Description"], information) + "\n"
+    history = [
+        r for r in (control.get("revision_history") or [])
+        if isinstance(r, dict) and any(value not in (None, "", [], {}) for value in r.values())
+    ]
+    if history:
+        md += "## " + ("Revision History" if frd else "Document Control") + "\n" + table(
+            ["Version", "Date", "Author", "Description"],
+            [(r.get("version"), r.get("date"), r.get("author"), r.get("description")) for r in history],
+        ) + "\n"
     if frd:
-        approvals = control.get("approvals") or []
-        md += "## Document Approvals History\n" + table(["Role", "Name", "Signature", "Date"],
-            [(r.get("role"), r.get("name"), r.get("signature"), r.get("date")) for r in approvals if isinstance(r, dict)] or [(None, None, None, None)]) + "\n"
+        approvals = [
+            r for r in (control.get("approvals") or [])
+            if isinstance(r, dict) and any(value not in (None, "", [], {}) for value in r.values())
+        ]
+        if approvals:
+            md += "## Document Approvals History\n" + table(
+                ["Role", "Name", "Signature", "Date"],
+                [(r.get("role"), r.get("name"), r.get("signature"), r.get("date")) for r in approvals],
+            ) + "\n"
     else:
-        md += "## Distribution List\n" + table(["Name", "Department", "Role"],
-            [(r.get("name"), r.get("department"), r.get("role")) for r in context_records(context, "stakeholders")] or [(None, None, None)]) + "\n"
+        stakeholders = [
+            r for r in context_records(context, "stakeholders")
+            if any(value not in (None, "", [], {}) for value in r.values())
+        ]
+        if stakeholders:
+            md += "## Distribution List\n" + table(
+                ["Name", "Department", "Role"],
+                [(r.get("name"), r.get("department"), r.get("role")) for r in stakeholders],
+            ) + "\n"
     sources = []
-    seen = set()
-    for fact in facts:
-        source_id = getattr(fact, "source_id", None)
-        if not source_id or source_id in seen:
-            continue
-        seen.add(source_id)
+    source_ids = list(dict.fromkeys(
+        getattr(fact, "source_id", None) for fact in facts if getattr(fact, "source_id", None)
+    ))
+    for source_id in source_ids[:max_sources]:
         source = await session.get(BaSource, source_id)
         if source and source.org_id == ctx.org_id and source.project_id == ctx.project_id:
             ref = str(source.ref or "").replace("\\", "/")
             title = PurePosixPath(ref).name if ref else "Recorded project context"
             sources.append((f"REF-{len(sources)+1:03d}", title, source.kind))
-    return md, table(["Ref", "Title", "Source type"], sources or [(None, None, None)])
+    references = (
+        table(["Ref", "Title", "Source type"], sources)
+        if sources else "No source documents have been linked to the current project record.\n"
+    )
+    remaining = max(0, len(source_ids) - max_sources)
+    if remaining:
+        references += f"\n{remaining} additional source records are linked in the Requirements Register.\n"
+    return md, references
 
 
 def contents(headings):

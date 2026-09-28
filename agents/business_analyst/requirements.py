@@ -13,6 +13,20 @@ class RequirementCategory(str, Enum):
     TRANSITIONAL = "transitional"
 
 
+class RequirementType(str, Enum):
+    """More specific classification for the requirement register and document split."""
+
+    BUSINESS = "business"
+    STAKEHOLDER = "stakeholder"
+    FUNCTIONAL = "functional"
+    NONFUNCTIONAL = "nonfunctional"
+    BUSINESS_RULE = "business_rule"
+    CONSTRAINT = "constraint"
+    ASSUMPTION = "assumption"
+    ARCHITECTURE_DECISION = "architecture_decision"
+    TRANSITIONAL = "transitional"
+
+
 class SourceSpan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -54,13 +68,30 @@ class ExtractedRequirement(BaseModel):
 
     external_key: str = Field(min_length=1)
     category: RequirementCategory
+    requirement_type: RequirementType | None = None
+    functional_area: str | None = None
     stakeholder: str | None = None
+    owner: str | None = None
     task: str | None = None
     object: str | None = None
     benefit: str | None = None
+    business_problem: str | None = None
+    business_objective: str | None = None
+    success_metric: str | None = None
+    priority: str | None = None
+    status: str | None = None
     trigger: str | None = None
     preconditions: list[str] = Field(default_factory=list)
     outcomes: list[str] = Field(default_factory=list)
+    acceptance_criteria: list[str] = Field(default_factory=list)
+    dependencies: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    business_rules: list[str] = Field(default_factory=list)
+    input_data: list[str] = Field(default_factory=list)
+    output_data: list[str] = Field(default_factory=list)
+    data_format: str | None = None
+    exceptions: list[str] = Field(default_factory=list)
+    comments: str | None = None
     constraints: list[RequirementConstraint] = Field(default_factory=list)
     ambiguities: list[RequirementAmbiguity] = Field(default_factory=list)
     evidence_span_ids: list[str] = Field(min_length=1)

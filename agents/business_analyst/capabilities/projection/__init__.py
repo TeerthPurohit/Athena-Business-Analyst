@@ -11,6 +11,7 @@ CLAUDE.md Non-Negotiables:
   records one gap fact and returns a plain-language "can't be written yet" page.
 """
 import importlib
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +22,17 @@ from agents.business_analyst.facts import BATenantContext, assert_fact, get_fact
 from agents.business_analyst.models import BaDeliverableSpec, BaFact, BaProject
 
 REQUIREMENTS_NEEDED = "requirements captured from its sources"
+
+
+@dataclass(frozen=True)
+class RenderedArtifact:
+    """Binary renderer output plus a text preview and storage metadata."""
+
+    content: bytes
+    output_format: str
+    preview: str
+    media_type: str
+    extension: str
 
 
 def label(key: Any) -> str:
@@ -130,7 +142,7 @@ async def render_deliverable(
     spec: BaDeliverableSpec,
     ctx: BATenantContext,
     session: AsyncSession,
-) -> str:
+) -> str | RenderedArtifact:
     """Dispatches rendering; when the renderer's inputs are absent, records the gap once and says so plainly."""
     try:
         mod = importlib.import_module(f"agents.business_analyst.capabilities.projection.{spec.key}")
@@ -138,6 +150,8 @@ async def render_deliverable(
         return f"# {label(spec.key)}\n\nThis deliverable type is not available yet."
 
     content = await mod.render(spec, ctx, session)
+    if isinstance(content, RenderedArtifact):
+        return content
     if content is not None:
         return content
 

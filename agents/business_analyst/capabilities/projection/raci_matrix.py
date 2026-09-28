@@ -15,10 +15,22 @@ async def render(spec: BaDeliverableSpec, ctx: BATenantContext, session: AsyncSe
     if not racis:
         return None
 
-    md = f"# {TITLE}\n\n| Activity / Requirement | Responsible | Accountable | Consulted | Informed |\n| --- | --- | --- | --- | --- |\n"
+    md = f"# {TITLE}\n\n"
+    md += "This draft reports only RACI assignments present in the project record. Missing roles are left blank for owner review.\n\n"
+    md += "| Activity / Requirement | Responsible | Accountable | Consulted | Informed | Missing Assignments |\n| --- | --- | --- | --- | --- | --- |\n"
+    missing_rows = []
     for r in racis:
         val = r.value if isinstance(r.value, dict) else {}
-        cells = [plain(val.get(role)) or "-" for role in ("responsible", "accountable", "consulted", "informed")]
-        md += f"| {plain(val.get('activity')) or r.subject_key} | " + " | ".join(cells) + " |\n"
+        roles = ("responsible", "accountable", "consulted", "informed")
+        cells = [plain(val.get(role)).replace("|", "/") for role in roles]
+        missing = [role.title() for role, cell in zip(roles, cells) if not cell]
+        activity = plain(val.get("activity") or val.get("requirement")).replace("|", "/")
+        if not activity:
+            missing.insert(0, "Activity")
+        md += "| " + " | ".join([activity, *cells, ", ".join(missing)]) + " |\n"
+        if missing:
+            missing_rows.append(plain(val.get("activity") or val.get("requirement")) or "RACI entry")
+    if missing_rows:
+        md += f"\n{len(missing_rows)} entries need one or more role assignments before approval.\n"
 
     return md

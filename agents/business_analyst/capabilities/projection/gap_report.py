@@ -34,7 +34,8 @@ async def render(spec: BaDeliverableSpec, ctx: BATenantContext, session: AsyncSe
             area = "Project"
         reason = plain(val.get("reason"))
         reason = reason if " " in reason else label(reason)
-        detail = " ".join(filter(None, [reason, plain(val.get("question"))])) or "Not yet specified"
-        md += f"| {area} | {label(val.get('field') or '') or '-'} | {detail.replace('|', '/')} |\n"
+        detail = " ".join(filter(None, [reason, plain(val.get("question"))]))
+        topic = label(val.get("field")) if val.get("field") else ""
+        md += f"| {area} | {topic.replace('|', '/')} | {detail.replace('|', '/')} |\n"
 
     return md

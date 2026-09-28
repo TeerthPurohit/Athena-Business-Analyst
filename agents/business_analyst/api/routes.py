@@ -53,11 +53,13 @@ from agents.business_analyst.clarification import (
 )
 from agents.business_analyst.jev_client import choose_chat_action
 from agents.business_analyst.deliverables import (
+    XLSX_DELIVERABLES,
     approve_deliverable_instance,
     is_stale,
     seed_deliverable_specs,
 )
-from agents.business_analyst.capabilities.projection import render_deliverable
+from agents.business_analyst.capabilities.projection import RenderedArtifact, render_deliverable
+from agents.business_analyst.capabilities.projection.requirements_register import xlsx_preview
 from agents.business_analyst.deliverables_pdf import PDF_DELIVERABLES, markdown_to_pdf, pdf_to_text
 from agents.business_analyst.capabilities.projection.requirement_package import (
     render_requirement_package,
@@ -1294,13 +1296,22 @@ async def get_project_deliverable_endpoint(
 ) -> Dict[str, Any]:
     """Read a generated deliverable within its project and organization."""
     instance, artifact = await _load_project_deliverable(instance_id, ctx, db, store)
+    if instance.output_format == "pdf" or instance.deliverable_key in PDF_DELIVERABLES:
+        preview_content = pdf_to_text(artifact)
+        output_format = "pdf"
+    elif instance.output_format == "xlsx" or instance.deliverable_key in XLSX_DELIVERABLES:
+        preview_content = xlsx_preview(artifact)
+        output_format = "xlsx"
+    else:
+        preview_content = artifact.decode("utf-8")
+        output_format = instance.output_format
     return {
         "id": instance.id,
         "deliverable_key": instance.deliverable_key,
         "status": instance.status,
         "is_stale": await is_stale(instance, db),
-        "output_format": "pdf" if instance.deliverable_key in PDF_DELIVERABLES else instance.output_format,
-        "content": pdf_to_text(artifact) if instance.output_format == "pdf" or instance.deliverable_key in PDF_DELIVERABLES else artifact.decode("utf-8"),
+        "output_format": output_format,
+        "content": preview_content,
     }
 
 
@@ -1424,10 +1435,16 @@ async def download_project_deliverable_endpoint(
     """Download a generated deliverable in its stored format."""
     instance, artifact = await _load_project_deliverable(instance_id, ctx, db, store)
     is_pdf = instance.output_format == "pdf" or instance.deliverable_key in PDF_DELIVERABLES
-    extension = "pdf" if is_pdf else "md"
+    is_xlsx = instance.output_format == "xlsx" or instance.deliverable_key in XLSX_DELIVERABLES
+    extension = "pdf" if is_pdf else "xlsx" if is_xlsx else "md"
+    media_type = (
+        "application/pdf" if is_pdf
+        else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if is_xlsx
+        else "text/markdown; charset=utf-8"
+    )
     return Response(
         content=artifact,
-        media_type="application/pdf" if is_pdf else "text/markdown; charset=utf-8",
+        media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{instance.deliverable_key}.{extension}"'},
     )
 
@@ -1470,13 +1487,28 @@ async def generate_deliverable_endpoint(
         "generate-deliverable", input={"deliverable": key}, session_id=ctx.project_id,
         tags=["business-analyst", "deliverable"], metadata={"org_id": ctx.org_id},
     ) as obs:
-        content_str = await render_deliverable(spec, ctx, db)
-        obs.update(output=content_str)
+        rendered = await render_deliverable(spec, ctx, db)
+        obs.update(output=rendered.preview if isinstance(rendered, RenderedArtifact) else rendered)
 
-    output_format = "pdf" if key in PDF_DELIVERABLES else "markdown"
-    is_pdf = output_format == "pdf"
-    artifact = await asyncio.to_thread(markdown_to_pdf, content_str) if is_pdf else content_str.encode("utf-8")
-    preview_content = pdf_to_text(artifact) if is_pdf else content_str
+    if key in XLSX_DELIVERABLES and not isinstance(rendered, RenderedArtifact):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"The Excel renderer for '{key}' is unavailable.",
+        )
+    if isinstance(rendered, RenderedArtifact):
+        output_format = rendered.output_format
+        artifact = rendered.content
+        preview_content = rendered.preview
+        extension = rendered.extension
+        media_type = rendered.media_type
+    else:
+        content_str = rendered
+        output_format = "pdf" if key in PDF_DELIVERABLES else "markdown"
+        is_pdf = output_format == "pdf"
+        artifact = await asyncio.to_thread(markdown_to_pdf, content_str) if is_pdf else content_str.encode("utf-8")
+        preview_content = pdf_to_text(artifact) if is_pdf else content_str
+        extension = "pdf" if is_pdf else "md"
+        media_type = "application/pdf" if is_pdf else "text/markdown"
     instance_id = str(uuid.uuid4())
     instance = BaDeliverableInstance(
         id=instance_id,
@@ -1489,8 +1521,6 @@ async def generate_deliverable_endpoint(
         content_ref="",
         status="generated",
     )
-    extension = "pdf" if is_pdf else "md"
-    media_type = "application/pdf" if is_pdf else "text/markdown"
     storage_key = f"deliverables/{ctx.org_id}/{ctx.project_id}/{instance_id}.{extension}"
     instance.content_ref = await asyncio.to_thread(
         store.put_if_absent, storage_key, artifact, media_type

@@ -3,7 +3,7 @@
 CLAUDE.md Non-Negotiables:
 - staleness computation: lazy-on-read max(ba_fact.seq) over input node types > frontier_seq.
 - deliverable instance approval: distinct verb, using set_approval_context(True).
-- seed_deliverable_specs(): seeds all 17 deliverable specs and renderers into catalog.
+- seed_deliverable_specs(): seeds the BA deliverable catalog and renderers.
 """
 from datetime import datetime, timezone
 import uuid
@@ -21,6 +21,8 @@ from agents.business_analyst.models import (
     BaRenderer,
 )
 
+XLSX_DELIVERABLES = frozenset({"requirements_register"})
+
 DELIVERABLE_CATALOG_SEEDS = [
     {
         "key": "brd",
@@ -32,7 +34,7 @@ DELIVERABLE_CATALOG_SEEDS = [
         "versioning_strategy": "seq_snapshot",
         "approval_workflow": "single_approver",
         "narration_mode": "narrated",
-        "prompt_id": "ba_brd_narrative_v2",
+        "prompt_id": "ba_brd_business_analysis_v1",
     },
     {
         "key": "frd",
@@ -40,6 +42,30 @@ DELIVERABLE_CATALOG_SEEDS = [
         "required_node_types": ["Requirement"],
         "required_capabilities": ["derive_requirements", "model_process"],
         "renderer_key": "frd",
+        "review_process": "stakeholder_review",
+        "versioning_strategy": "seq_snapshot",
+        "approval_workflow": "single_approver",
+        "narration_mode": "structural",
+        "prompt_id": None,
+    },
+    {
+        "key": "technical_docs",
+        "purpose": "Evidence-based technical reference for architecture, data, API, deployment, and decision review.",
+        "required_node_types": ["Requirement", "business_context"],
+        "required_capabilities": ["derive_requirements"],
+        "renderer_key": "technical_docs",
+        "review_process": "technical_review",
+        "versioning_strategy": "seq_snapshot",
+        "approval_workflow": "single_approver",
+        "narration_mode": "structural",
+        "prompt_id": None,
+    },
+    {
+        "key": "requirements_register",
+        "purpose": "Excel register of all current requirements, source evidence, traceability, and quality-gate status.",
+        "required_node_types": ["Requirement"],
+        "required_capabilities": ["derive_requirements"],
+        "renderer_key": "requirements_register",
         "review_process": "stakeholder_review",
         "versioning_strategy": "seq_snapshot",
         "approval_workflow": "single_approver",
@@ -230,7 +256,7 @@ DELIVERABLE_CATALOG_SEEDS = [
 
 
 async def seed_deliverable_specs(session: AsyncSession) -> None:
-    """Seeds all 17 deliverable specs and renderers into catalog tables if missing."""
+    """Seeds deliverable specs and renderers into catalog tables when missing."""
     for item in DELIVERABLE_CATALOG_SEEDS:
         key = item["key"]
         # Check spec existence
@@ -259,7 +285,11 @@ async def seed_deliverable_specs(session: AsyncSession) -> None:
             # Keep existing global specs in step with what the renderers read (drives is_stale).
             spec.required_node_types = item["required_node_types"]
 
-        renderer_output_format = "pdf" if key == "brd" else "markdown"
+        renderer_output_format = (
+            "pdf" if key in {"brd", "frd", "technical_docs"}
+            else "xlsx" if key in XLSX_DELIVERABLES
+            else "markdown"
+        )
         stmt_rnd = select(BaRenderer).where(
             BaRenderer.key == key,
         )

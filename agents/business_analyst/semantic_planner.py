@@ -53,7 +53,7 @@ async def build_requirement_extraction_llm(
     if not source_text.strip():
         return RequirementExtraction()
 
-    system_prompt = await fetch_prompt("9", "ba_requirement_extraction_v1")
+    system_prompt = await fetch_prompt("9", "ba_requirement_extraction_v2")
     extraction = await llm_get_structured_output(
         system_prompt=system_prompt,
         user_prompt=source_text,
