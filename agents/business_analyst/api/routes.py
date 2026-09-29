@@ -16,6 +16,7 @@ import hashlib
 import logging
 import json
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,7 +37,7 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,7 +52,8 @@ from agents.business_analyst.clarification import (
     get_next_clarification,
     record_clarification_answer,
 )
-from agents.business_analyst.jev_client import choose_chat_action
+from agents.business_analyst.jev_client import decide_chat_turn
+from agents.business_analyst.llm_client import get_structured_output
 from agents.business_analyst.deliverables import (
     XLSX_DELIVERABLES,
     approve_deliverable_instance,
@@ -209,11 +211,42 @@ class ProjectPatchRequest(BaseModel):
 
 class ClarificationAnswerRequest(BaseModel):
     answer: str
+    next_step: Optional[str] = None
 
 
 class ChatMessageRequest(BaseModel):
     message: str
     pending_question: Optional[str] = None
+    recent_turns: List[Dict[str, str]] = Field(default_factory=list)
+    tone: Optional[str] = None
+
+
+class GreetingReply(BaseModel):
+    reply: str
+
+
+async def _greeting_reply(message: str, recent_turns: List[Dict[str, str]]) -> str:
+    """Use the chat model for a short social reply without running fact extraction."""
+    context = [{"user": turn.get("user", "")[:300], "assistant": turn.get("assistant", "")[:300]}
+               for turn in recent_turns[-2:]]
+    try:
+        result = await asyncio.wait_for(
+            get_structured_output(
+                "You are Athena, a helpful business analyst. Reply naturally to a brief greeting in one short sentence. Invite the user to share what they need. Do not claim to have inspected or changed the project.",
+                json.dumps({"message": message[:300], "recent_turns": context}, ensure_ascii=False),
+                GreetingReply,
+                max_retries=1,
+                max_tokens=100,
+                name="greet-project-user",
+            ),
+            timeout=8,
+        )
+        reply = result.reply.strip()
+        if reply:
+            return reply[:400]
+    except Exception:
+        logger.exception("BA greeting generation failed")
+    return "Hi! What would you like to work through?"
 
 
 class VoiceSpeechRequest(BaseModel):
@@ -237,21 +270,37 @@ async def classify_chat_intent_endpoint(
         "route-chat-message", input=req.message, session_id=ctx.project_id,
         tags=["business-analyst", "chat"], metadata={"org_id": ctx.org_id},
     ) as obs:
-        selected = await choose_chat_action(req.message, options, req.pending_question)
-        obs.update(output=selected)
+        decision = await decide_chat_turn(req.message, options, req.pending_question, req.recent_turns)
+        obs.update(output={"action": decision.action, "tone": decision.tone, "topic": decision.topic, "next_step": decision.next_step})
+    selected = decision.action
+    if selected is None and re.fullmatch(r"(?:hi|hello|hey|good morning|good afternoon|good evening)[.! ]*", req.message.strip(), re.IGNORECASE):
+        selected = "greeting"
+    guidance = {"tone": decision.tone, "topic": decision.topic, "next_step": decision.next_step}
+    if selected == "greeting":
+        reply = await _greeting_reply(req.message, req.recent_turns)
+        source = await _get_or_create_chat_source(ctx, db)
+        await assert_fact(
+            ctx, db, subject_type="ConversationTurn", subject_key=str(uuid.uuid4()),
+            predicate="message", source_id=source.id, asserted_by="project_user",
+            value={"text": req.message, "reply": reply, "steps": ["greet_project_user"], "facts_created": 0},
+        )
+        await db.commit()
+        return {"action": "greeting", "reply": reply, **guidance}
     if selected and selected.startswith("deliverable_"):
         key = selected.removeprefix("deliverable_")
         if key in options:
-            return {"action": "deliverable", "deliverable_key": key}
+            return {"action": "deliverable", "deliverable_key": key, **guidance}
     if selected in {"record", "investigate", "answer"}:
-        return {"action": selected}
+        return {"action": selected, **guidance}
     if req.message.strip().endswith("?"):
-        return {"action": "investigate"}
-    return {"action": "answer" if req.pending_question else "record"}
+        return {"action": "investigate", **guidance}
+    return {"action": "answer" if req.pending_question and decision.topic != "changed" else "record", **guidance}
 
 
 class ProjectAnalyzeRequest(BaseModel):
     question: str
+    tone: Optional[str] = None
+    next_step: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -555,8 +604,11 @@ def _ir_highlights(ir: ProjectIR) -> List[str]:
     return [part for part in parts if part]
 
 
-def _record_reply(result: Dict[str, Any]) -> str:
+def _record_reply(result: Dict[str, Any], tone: str | None = None) -> str:
     """The chat reply after recording a message — built from what was actually recorded."""
+    if tone == "frustrated":
+        return ("I hear you. I’ve added this to the project and will focus on the concern." if result.get("facts_created")
+                else "I hear you. I couldn’t confirm a new project fact from that message.")
     if not result.get("facts_created"):
         # A free-form clarification may add useful context before the extractor can
         # turn it into a structured fact. The next question should carry the turn.
@@ -1006,6 +1058,7 @@ async def _extract_and_regenerate_summary(
     source_id: str,
     asserted_by: str,
     emit: Emit = None,
+    tone: str | None = None,
 ) -> Dict[str, Any]:
     """Runs fact extraction, then regenerates project_summary in the same transaction — but only
     when the turn recorded something, so a turn with nothing new costs one pipeline, not two."""
@@ -1017,7 +1070,7 @@ async def _extract_and_regenerate_summary(
         await emit({"type": "tool_result", "tool": "extract_project_facts", "message": f"Confirmed {_join_words(highlights)}" if highlights else "Nothing new could be confirmed"})
 
     summary, project = await _refresh_summary_if_changed(ctx, db, bool(result["facts_created"]), emit)
-    result["reply"] = _record_reply(result)
+    result["reply"] = _record_reply(result, tone)
     if asserted_by == "ba_chat_extraction":
         await assert_fact(
             ctx, db, subject_type="ConversationTurn", subject_key=str(uuid.uuid4()),
@@ -1047,7 +1100,7 @@ async def chat_message_endpoint(
     source = await _get_or_create_chat_source(ctx, db)
     try:
         result = await _extract_and_regenerate_summary(
-            ctx, db, text=req.message, source_id=source.id, asserted_by="ba_chat_extraction",
+            ctx, db, text=req.message, source_id=source.id, asserted_by="ba_chat_extraction", tone=req.tone,
         )
     except JevDecisionError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=VALIDATION_UNAVAILABLE) from exc
@@ -1083,7 +1136,7 @@ async def stream_chat_message_endpoint(
         source = await _get_or_create_chat_source(ctx, session)
         result = await _extract_and_regenerate_summary(
             ctx, session, text=req.message, source_id=source.id,
-            asserted_by="ba_chat_extraction", emit=emit,
+            asserted_by="ba_chat_extraction", emit=emit, tone=req.tone,
         )
         await emit({"type": "result", "data": {
             "facts_created": result["facts_created"],
@@ -1106,7 +1159,7 @@ async def analyze_project_endpoint(
     if not req.question.strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Question must not be empty.")
     try:
-        result = await run_project_analysis(ctx, db, req.question)
+        result = await run_project_analysis(ctx, db, req.question, tone=req.tone, escalate=req.next_step == "escalate")
     except RuntimeError as exc:
         logger.exception("BA project investigation unavailable")
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Project investigation is unavailable right now. Please try again.") from exc
@@ -1134,7 +1187,7 @@ async def stream_project_analysis_endpoint(
     await db.commit()  # release the tenant-lookup connection; the stream uses its own session
 
     async def work(session: AsyncSession, emit: Callable[[Dict[str, Any]], Awaitable[None]]) -> None:
-        result = await run_project_analysis(ctx, session, req.question, emit=emit)
+        result = await run_project_analysis(ctx, session, req.question, emit=emit, tone=req.tone, escalate=req.next_step == "escalate")
         source = await _get_or_create_chat_source(ctx, session)
         await assert_fact(
             ctx, session, subject_type="ConversationTurn", subject_key=str(uuid.uuid4()),
@@ -1720,20 +1773,22 @@ async def answer_clarification_endpoint(
 
     If the answer conflicts with a prior answer for the same gap, returns a
     conflict_notice explaining both values and asking which should stand.
-    `next_question` is prepared in the same request (it is recorded as asked, so fetching it
-    again just resumes it); the slow scope rewrite runs after the response is sent.
+    Unless the turn decision is move_on, `next_question` is prepared and recorded
+    in the same request. The slow scope rewrite runs after the response is sent.
     """
     result = await record_clarification_answer(ctx, db, gap_key, req.answer)
     project = await db.get(BaProject, ctx.project_id)
     project.settings = {**(project.settings or {}), "scope_approved": False}
     await db.commit()
-    nodes, edges = await _load_graph_for_ranking(ctx, db)
-    next_question = await get_next_clarification(ctx, db, nodes, edges)
-    await db.commit()
+    next_question = None
+    if req.next_step != "move_on":
+        nodes, edges = await _load_graph_for_ranking(ctx, db)
+        next_question = await get_next_clarification(ctx, db, nodes, edges)
+        await db.commit()
     background_tasks.add_task(_regenerate_summary_after_response, ctx)
     return {
         **result,
-        "next_question": next_question or {"question": None, "gap_key": None, "message": "All open questions are answered."},
+        "next_question": None if req.next_step == "move_on" else next_question or {"question": None, "gap_key": None, "message": "All open questions are answered."},
     }
 
 

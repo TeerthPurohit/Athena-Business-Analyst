@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -53,42 +54,110 @@ async def choose_project_inspection_tool(question: str) -> str | None:
     return None
 
 
-@traced("classify-chat-action", as_type="generation", model="typesafe/jev-1.13", input=lambda args: {"message": args["message"], "pending_question": args.get("pending_question"), "options": list(args["deliverables"])})
-async def choose_chat_action(message: str, deliverables: dict[str, str], pending_question: str | None = None) -> str | None:
-    """Classify a chat turn into a bounded project action using Jev."""
+@dataclass(frozen=True)
+class ChatTurnDecision:
+    action: str | None = None
+    tone: str = "neutral"
+    topic: str = "same"
+    next_step: str = "probe"
+
+
+def _confident_choice(answer: Any, candidates: dict[str, str]) -> str | None:
+    if not isinstance(answer, dict):
+        return None
+    choice = answer.get("choice")
+    if not isinstance(choice, str) or choice not in candidates:
+        return None
+    confidence = answer.get("confidence")
+    probabilities = answer.get("probabilities")
+    probability = probabilities.get(choice) if isinstance(probabilities, dict) else None
+    if (
+        isinstance(confidence, (int, float)) and not isinstance(confidence, bool)
+        and confidence >= 0.75
+        and isinstance(probability, (int, float)) and not isinstance(probability, bool)
+        and probability >= 0.65
+    ):
+        return choice
+    return None
+
+
+@traced("classify-chat-turn", as_type="generation", model="typesafe/jev-1.13", input=lambda args: {"message": args["message"], "pending_question": args.get("pending_question"), "options": list(args["deliverables"])}, output=lambda result: result.__dict__)
+async def decide_chat_turn(
+    message: str,
+    deliverables: dict[str, str],
+    pending_question: str | None = None,
+    recent_turns: list[dict[str, str]] | None = None,
+) -> ChatTurnDecision:
+    """Classify one turn and its conversational context in a single Jev request."""
     load_dotenv(override=False)
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
-        return None
+        return ChatTurnDecision()
     candidates = {
+        "greeting": "A greeting or brief social opening with no project request or new project information.",
         "record": "The user is providing or revising project facts, scope, decisions, or answers.",
         "investigate": "The user asks Athena to inspect current project evidence and answer a question.",
         **({"answer": "The user is answering Athena's pending clarification question."} if pending_question else {}),
         **{f"deliverable_{key}": f"The user asks to create a {name} draft." for key, name in deliverables.items()},
     }
+    tone_candidates = {
+        "neutral": "The user is neutral or positive.",
+        "frustrated": "The user expresses frustration, impatience, or dissatisfaction with Athena or the project process.",
+    }
+    topic_candidates = {
+        "same": "The message continues the current project topic or answers the pending question.",
+        "changed": "The user clearly starts a different topic or redirects the conversation.",
+    }
+    step_candidates = {
+        "probe": "Ask or continue a useful clarification after recording project information.",
+        "move_on": "Let the user lead; do not immediately ask another clarification.",
+        "escalate": "The user requests deeper investigation of a project problem or an unresolved concern.",
+    }
     payload = {
         "model": JEV_MODEL,
-        "state": {"user_message": message[:1500], "pending_question": pending_question},
-        "questions": {"chat_action": {
-            "type": "choice",
-            "instructions": "Choose the action the user explicitly requests. Treat scope changes and new information as record. Do not create a deliverable unless requested.",
-            "criteria": candidates,
-        }},
+        "state": {
+            "user_message": message[:1500],
+            "pending_question": pending_question[:500] if pending_question else None,
+            "recent_turns": [
+                {"user": str(turn.get("user", ""))[:500], "assistant": str(turn.get("assistant", ""))[:500]}
+                for turn in (recent_turns or [])[-4:]
+                if isinstance(turn, dict)
+            ],
+        },
+        "questions": {
+            "chat_action": {
+                "type": "choice",
+                "instructions": "Choose the action the user explicitly requests. Treat scope changes and new information as record. A greeting must contain no substantive project information. Do not create a deliverable unless requested.",
+                "criteria": candidates,
+            },
+            "user_tone": {"type": "choice", "instructions": "Judge the user's current tone from the conversation, without guessing hidden emotions.", "criteria": tone_candidates},
+            "topic_shift": {"type": "choice", "instructions": "Compare the current message with recent turns and the pending question. Choose changed only for a clear redirect.", "criteria": topic_candidates},
+            "next_step": {"type": "choice", "instructions": "Choose how Athena should proceed after handling the explicit action. Escalate means deeper project investigation, not a human handoff. Do not probe after a greeting, a topic change, or clear frustration.", "criteria": step_candidates},
+        },
     }
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             response = await client.post(OPENROUTER_DECISIONS_URL, headers={"Authorization": f"Bearer {api_key}"}, json=payload)
             response.raise_for_status()
-            answer = response.json()["answers"]["chat_action"]
+            answers = response.json()["answers"]
     except (httpx.HTTPError, KeyError, TypeError, ValueError):
-        return None
-    choice = answer.get("choice")
-    probabilities = answer.get("probabilities") or {}
-    confidence = answer.get("confidence")
-    probability = probabilities.get(choice)
-    if choice in candidates and isinstance(confidence, (int, float)) and confidence >= 0.75 and isinstance(probability, (int, float)) and probability >= 0.65:
-        return choice
-    return None
+        return ChatTurnDecision()
+    if not isinstance(answers, dict):
+        return ChatTurnDecision()
+    action = _confident_choice(answers.get("chat_action"), candidates)
+    tone = _confident_choice(answers.get("user_tone"), tone_candidates) or "neutral"
+    topic = _confident_choice(answers.get("topic_shift"), topic_candidates) or "same"
+    next_step = _confident_choice(answers.get("next_step"), step_candidates) or "probe"
+    if next_step == "escalate" and action != "investigate":
+        next_step = "move_on"
+    if action == "greeting" or tone == "frustrated" or topic == "changed":
+        next_step = "move_on" if next_step == "probe" else next_step
+    return ChatTurnDecision(action=action, tone=tone, topic=topic, next_step=next_step)
+
+
+async def choose_chat_action(message: str, deliverables: dict[str, str], pending_question: str | None = None) -> str | None:
+    """Compatibility wrapper for callers that only need the action."""
+    return (await decide_chat_turn(message, deliverables, pending_question)).action
 
 class JevDecisionError(RuntimeError):
     """Base exception for Jev Decisions API errors."""

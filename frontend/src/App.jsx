@@ -443,6 +443,10 @@ export default function App() {
     const projectId = activeId
     const scope = scopeRef.current
     const message = prompt.trim()
+    const recentTurns = activity.slice(0, 4).reverse().map((item) => ({
+      user: item.message || item.response || '',
+      assistant: item.investigating ? (item.result?.answer || '') : (item.result?.reply || item.clarification || ''),
+    }))
     const turnId = crypto.randomUUID()
     setActivity((current) => [{ id: turnId, message, pending: true }, ...current])
     setPrompt('')
@@ -452,12 +456,21 @@ export default function App() {
     setAnalysisSteps([routingStep])
     try {
       const intent = await request(`/api/ba/projects/${projectId}/chat/intent`, token, {
-        method: 'POST', body: JSON.stringify({ message, pending_question: clarification?.question || null }),
+        method: 'POST', body: JSON.stringify({ message, pending_question: clarification?.question || null, recent_turns: recentTurns }),
       })
       if (!isCurrent(scope)) return
-      if (clarification && intent.action === 'answer') {
+      if (intent.action === 'greeting' || intent.topic === 'changed' || (intent.next_step === 'move_on' && intent.action !== 'answer')) setClarification(null)
+      if (intent.action === 'greeting') {
+        setActivity((current) => current.map((item) => item.id === turnId
+          ? { ...item, pending: false, result: { reply: intent.reply } }
+          : item))
         setAnalysisSteps([])
-        await submitAnswer(event, message, turnId)
+        await loadFacts(projectId)
+        return
+      }
+      if (clarification && intent.topic !== 'changed' && intent.action === 'answer') {
+        setAnalysisSteps([])
+        await submitAnswer(event, message, turnId, intent.next_step)
         return
       }
       if (intent.action === 'deliverable' && intent.deliverable_key) {
@@ -472,7 +485,7 @@ export default function App() {
       setLiveThinking('')
       const result = await streamProjectAction(
         `/api/ba/projects/${projectId}/${investigating ? 'analyze' : 'chat'}/stream`, token,
-        investigating ? { question: message } : { message }, (event) => {
+        investigating ? { question: message, tone: intent.tone, next_step: intent.next_step } : { message, tone: intent.tone }, (event) => {
           if (!isCurrent(scope)) return
           if (['status', 'tool_call', 'tool_result'].includes(event.type)) {
             observedSteps.push(event)
@@ -495,7 +508,7 @@ export default function App() {
       setFeedback(investigating ? 'Investigation complete. Read the result below.' : 'Context recorded and added to the project record.')
       if (!investigating) {
         await loadFacts(projectId)
-        await nextClarification(projectId)
+        if (intent.next_step === 'probe') await nextClarification(projectId)
       }
     } catch (cause) {
       if (isCurrent(scope)) {
@@ -632,7 +645,7 @@ export default function App() {
     }
   }
 
-  async function submitAnswer(event, suppliedAnswer, pendingTurnId = null) {
+  async function submitAnswer(event, suppliedAnswer, pendingTurnId = null, nextStep = 'probe') {
     event.preventDefault()
     if (!clarification || !suppliedAnswer) return
     const projectId = activeId
@@ -642,7 +655,7 @@ export default function App() {
     setAnalysisSteps([{ type: 'tool_call', tool: 'record_clarification_answer', specialist: 'Scope analyst' }])
     try {
       const result = await request(`/api/ba/projects/${projectId}/clarifications/${clarification.gap_key}/answer`, token, {
-        method: 'POST', body: JSON.stringify({ answer: suppliedAnswer }),
+        method: 'POST', body: JSON.stringify({ answer: suppliedAnswer, next_step: nextStep }),
       })
       if (!isCurrent(scope)) return
       const answeredTurn = {
@@ -659,13 +672,15 @@ export default function App() {
       setFeedback(result.conflict_notice ? '' : 'Answer recorded. Your project findings have been updated.')
       setClarification(null)
       setPrompt('')
-      if (result.next_question) {
+      if (nextStep === 'move_on') {
+        setQuestionsComplete(false)
+      } else if (result.next_question) {
         setClarification(result.next_question.question ? result.next_question : null)
         setQuestionsComplete(!result.next_question.question)
       }
       // The scope rewrite finishes on the server after this response; refresh in the background.
       Promise.allSettled([loadFacts(projectId), loadProjects(token)])
-      if (!result.next_question) await nextClarification(projectId)
+      if (!result.next_question && nextStep !== 'move_on') await nextClarification(projectId)
     } catch (cause) {
       if (isCurrent(scope)) {
         setError(cause.message)
